@@ -1,0 +1,37 @@
+# Obsidian Vault Connection — merged plugin
+#
+# This single bundle replaces the former pair (dsh-obsidian-mcp + the separate
+# obsidian-mcp-runtime directory). The MCP server now lives inside this package
+# at ./server/node_modules/obsidian-mcp, so installing this one bundle is enough.
+#
+# The server is obsidian-mcp 2.0.1 running on DSH's own Node (process.execPath),
+# which satisfies its Node >= 22 requirement without a system Node install.
+# It reads and writes plain Markdown files, so Obsidian itself need not be
+# running.
+#
+# Tools appear to the model as mcp__obsidian__<tool>, for example
+# mcp__obsidian__obsidian_read_note and mcp__obsidian__obsidian_search_vault.
+#
+# To expose another vault, add a second `--vault <id>=<absolute-path>` pair to
+# args (forward slashes; up to ten vaults) and restart DSH.
+- insert:
+    - id: obsidian-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: obsidian
+        transport: stdio
+        command: !!js process.execPath
+        # `cwd` is this plugin's bundled server directory, which makes the
+        # relative entry script below unambiguous.
+        cwd: D:/Workspace/DeepSeek Harness/dsh-obsidian/server
+        args:
+          - node_modules/obsidian-mcp/dist/main.js
+          - serve
+          - --vault
+          - main=D:/Workspace/Obsidian
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+        # Fail loudly if the vault or server cannot start. Set this to false if
+        # you would rather boot DSH without Obsidian tools when the vault is
+        # unavailable.
+        failOnStartupError: true

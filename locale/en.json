@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Obsidian Vault Connection",
+    "description": "Connects your local Obsidian vault over MCP so the agent can read, search, create, and edit notes. The server ships inside this plugin, with nothing extra to install."
+  }
+}

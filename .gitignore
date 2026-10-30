@@ -1,0 +1,18 @@
+# The vendored MCP runtime in server/ is committed on purpose so the bundle is
+# self-contained and works from a fresh clone without a network install.
+# Only genuinely disposable artifacts belong here.
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+node_modules/.cache/
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+*.tmp
+*.bak
+*.swp
+*~

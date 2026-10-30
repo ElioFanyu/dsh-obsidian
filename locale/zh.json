@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Obsidian 仓库连接",
+    "description": "通过 MCP 连接本机 Obsidian 仓库，让智能体可以读取、搜索、创建和编辑笔记。服务端已随插件内置，无需额外安装。"
+  }
+}

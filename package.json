@@ -1,0 +1,27 @@
+{
+  "name": "@local/dsh-obsidian",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Connects a local Obsidian vault to DSH over MCP, with the obsidian-mcp server bundled in this package.",
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.1-rc.3 <0.3.0"
+  },
+  "exports": {
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "server"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1
+  }
+}
