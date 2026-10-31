@@ -9,20 +9,30 @@
 # It reads and writes plain Markdown files, so Obsidian itself need not be
 # running.
 #
+# Two rows are inserted:
+#
+#   obsidian-mcp        the MCP server itself (the tools the model calls)
+#   dsh-obsidian        this bundle's host half: validates the --vault arguments
+#                       below and publishes the result on
+#                       /plugins/dsh-obsidian/health, so a wrong vault path is
+#                       reported instead of silently hiding every tool.
+#
 # Tools appear to the model as mcp__obsidian__<tool>, for example
 # mcp__obsidian__obsidian_read_note and mcp__obsidian__obsidian_search_vault.
 #
 # To expose another vault, add a second `--vault <id>=<absolute-path>` pair to
-# args (forward slashes; up to ten vaults) and restart DSH.
+# the args below (forward slashes; up to ten vaults) and restart DSH. After the
+# edit, GET /plugins/dsh-obsidian/health to confirm both vaults resolve.
 - insert:
     - id: obsidian-mcp
       name: '@deepseek-ai/dsh-mcp-client'
       config:
         serverName: obsidian
         transport: stdio
+        # DSH's own Node runs the vendored server, so no system Node is needed.
         command: !!js process.execPath
-        # `cwd` is this plugin's bundled server directory, which makes the
-        # relative entry script below unambiguous.
+        # The vendored server's package directory. The entry script in `args` is
+        # resolved relative to it.
         cwd: D:/Workspace/DeepSeek Harness/dsh-obsidian/server
         args:
           - node_modules/obsidian-mcp/dist/main.js
@@ -35,3 +45,5 @@
         # you would rather boot DSH without Obsidian tools when the vault is
         # unavailable.
         failOnStartupError: true
+    - id: dsh-obsidian
+      name: dsh-obsidian

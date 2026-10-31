@@ -24,12 +24,50 @@ DSH 以 stdio 方式启动 `obsidian-mcp` 2.0.1 作为 MCP 服务端，并把它
 
 服务端直接读写磁盘上的 Markdown 文件，因此 Obsidian 本体不需要处于运行状态。
 
+### 宿主侧：vault 配置自检
+
+工具在模型看来只有两种状态：在，或者不在。配置写错时（路径打错、目录还不是仓库、
+两个仓库互相嵌套）服务端会在子进程里失败，你看到的现象只是「`mcp__obsidian__` 这些工具不见了」。
+
+本包的 `lib/` 补上这一段：插件加载时读取 MCP 那一行真实的 `--vault` 参数，
+用与服务端相同的规则校验一遍，并把结果发布在一个只读路由上：
+
+```
+http://127.0.0.1:1235/plugins/dsh-obsidian/health
+```
+
+```jsonc
+{
+  "ok": false,
+  "vaultConfig": { "found": true, "row": "obsidian-mcp", "args": ["node_modules/obsidian-mcp/dist/main.js", "serve", "--vault", "main=D:/Workspace/Obsidian"] },
+  "vaults": [
+    {
+      "ok": false,
+      "code": "VAULT_NOT_INITIALIZED",
+      "problem": "仓库「main」里没有 .obsidian 目录：D:/Workspace/Obsidian",
+      "fix": "先用 Obsidian 把这个目录打开为一个仓库，等它初始化完成"
+    }
+  ],
+  "problem": "仓库「main」里没有 .obsidian 目录：D:/Workspace/Obsidian",
+  "fix": "先用 Obsidian 把这个目录打开为一个仓库，等它初始化完成"
+}
+```
+
+校验的错误码与服务端一致（`VAULT_PATH_NOT_FOUND`、`VAULT_NOT_INITIALIZED`、
+`VAULT_ROOTS_OVERLAP`、`DUPLICATE_VAULT_ID` 等），所以报告里的原因就是服务端会给出的原因。
+路由只读、只用 GET、不写仓库、不额外开端口——它挂在 DSH 已有的 web 服务上。
+
 ## 目录结构
 
 ```
 dsh-obsidian/
   package.json          bundle 清单（dsh.bundle.patch）
-  cordis.patch.yml      插入 @deepseek-ai/dsh-mcp-client
+  cordis.patch.yml      插入 obsidian-mcp（MCP 服务端）与 dsh-obsidian（宿主侧自检）
+  lib/
+    index.js            宿主入口：加载时自检 + 健康路由
+    vaults.js           --vault 解析与校验（规则与服务端一致）
+    launch.js           定位内置服务端入口
+  test/host.test.js     校验与路由的测试（node --test）
   icon.svg
   locale/{en,zh}.json
   server/
@@ -59,12 +97,15 @@ dsh-obsidian/
           - serve
           - --vault
           - main=D:/Workspace/Obsidian
+    - id: dsh-obsidian
+      name: dsh-obsidian
 ```
 
 - **仓库** —— 修改 `main=D:/Workspace/Obsidian` 这一项参数。使用正斜杠和绝对路径；
   该仓库必须已包含 `.obsidian` 目录。
 - **多仓库** —— 追加更多 `--vault <id>=<绝对路径>` 参数（最多十个）。
   仓库 id 只能用小写字母、数字、`_`、`-`，且必须以字母开头。
+  两个仓库不能相同或互相嵌套。
 - **`command`** —— `!!js process.execPath` 表示用 DSH 自带的 Node 运行服务端，
   这里是 24.x，满足 obsidian-mcp 对 Node ≥ 22 的要求。
 - **`cwd`** —— 内置的服务端目录。如果移动了插件位置，需要同步修改此项；
@@ -73,7 +114,7 @@ dsh-obsidian/
   报错失败。若你希望仓库不可用时仍能启动 DSH（只是没有 Obsidian 工具），
   将其改为 `false`。
 
-修改后重启 DSH 生效。
+修改后重启 DSH 生效；改完先看一眼 `/plugins/dsh-obsidian/health`，比翻日志快。
 
 ## 安全行为
 
@@ -82,7 +123,17 @@ dsh-obsidian/
 - 写操作带日志、按 etag 做冲突检测（冲突返回 `REVISION_CONFLICT`），
   并作为一个事务整体回滚。
 - 默认删除是移入仓库内的 `.obsidian-mcp/trash`。
+- 健康路由只读，不接受写入、不返回笔记内容，只返回配置与校验结果。
 - 服务端从不监听网络端口，也不发送任何遥测。
+
+## 测试
+
+```bash
+npm test
+```
+
+测试覆盖 `--vault` 解析、各条校验规则（不存在的路径、非目录、未初始化的目录、
+重复 id、嵌套仓库、超过十个仓库）以及健康路由的三种响应。
 
 ## 事务恢复
 
@@ -99,6 +150,8 @@ node server/node_modules/obsidian-mcp/dist/main.js recovery restore --vault main
 脱离 DSH 单独检查仓库配置是否可用：
 
 ```bash
+npm run doctor
+# 等价于
 node server/node_modules/obsidian-mcp/dist/main.js doctor --vault main=D:/Workspace/Obsidian
 ```
 
