@@ -33,7 +33,8 @@ DSH 以 stdio 方式启动 `obsidian-mcp` 2.0.1 作为 MCP 服务端，并把它
 用与服务端相同的规则校验一遍，并把结果发布在一个只读路由上：
 
 ```
-http://127.0.0.1:1235/plugins/dsh-obsidian/health
+<DSH 地址>/plugins/dsh-obsidian/health
+# 例如 http://127.0.0.1:1235/plugins/dsh-obsidian/health
 ```
 
 ```jsonc
