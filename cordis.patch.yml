@@ -13,9 +13,11 @@
 #
 #   obsidian-mcp        the MCP server itself (the tools the model calls)
 #   dsh-obsidian        this bundle's host half: validates the --vault arguments
-#                       below and publishes the result on
-#                       /plugins/dsh-obsidian/health, so a wrong vault path is
-#                       reported instead of silently hiding every tool.
+#                       below, checks that this row still starts the bundled
+#                       server, and publishes both on
+#                       /plugins/dsh-obsidian/health, so a wrong vault path or a
+#                       stale path is reported instead of silently hiding every
+#                       tool.
 #
 # Tools appear to the model as mcp__obsidian__<tool>, for example
 # mcp__obsidian__obsidian_read_note and mcp__obsidian__obsidian_search_vault.
@@ -30,9 +32,15 @@
         serverName: obsidian
         transport: stdio
         # DSH's own Node runs the vendored server, so no system Node is needed.
+        # On the desktop build this is the Electron binary with
+        # ELECTRON_RUN_AS_NODE=1, which `env` below sets for the child.
         command: !!js process.execPath
         # The vendored server's package directory. The entry script in `args` is
-        # resolved relative to it.
+        # resolved relative to it. These two lines are the only place that names
+        # an absolute location; if the plugin moves, update `cwd` here. The
+        # health route reports a mismatch (launch.cwdMatchesBundled: false) and
+        # prints the correct path, so a stale value is diagnosed rather than
+        # guessed at.
         cwd: D:/Workspace/DeepSeek Harness/dsh-obsidian/server
         args:
           - node_modules/obsidian-mcp/dist/main.js
@@ -41,9 +49,11 @@
           - main=D:/Workspace/Obsidian
         env:
           ELECTRON_RUN_AS_NODE: '1'
-        # Fail loudly if the vault or server cannot start. Set this to false if
-        # you would rather boot DSH without Obsidian tools when the vault is
-        # unavailable.
+        # Make a failed connection or a failed first tool sync reject this row's
+        # activation, which DSH reports as a labelled warning. This row is not in
+        # DSH's required-entry list, so the warning does not abort startup; set
+        # this to false to suppress even that warning and run without Obsidian
+        # tools. Vault-path problems are reported by the health route either way.
         failOnStartupError: true
     - id: dsh-obsidian
       name: dsh-obsidian

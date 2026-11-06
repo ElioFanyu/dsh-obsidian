@@ -58,6 +58,47 @@ DSH 以 stdio 方式启动 `obsidian-mcp` 2.0.1 作为 MCP 服务端，并把它
 `VAULT_ROOTS_OVERLAP`、`DUPLICATE_VAULT_ID` 等），所以报告里的原因就是服务端会给出的原因。
 路由只读、只用 GET、不写仓库、不额外开端口——它挂在 DSH 已有的 web 服务上。
 
+### 宿主侧：启动行自检
+
+`cordis.patch.yml` 里的 `cwd` 和入口脚本是写死的 YAML，而插件本身可能被移动、复制到另一台机器，
+或从别处抄来一份补丁。这时 `--vault` 全都正确，工具却仍然不出现——问题出在「启动的是谁」，
+不在仓库。所以报告里多了一段 `launch`，把 YAML 声明的位置和本包真实的位置对比：
+
+```jsonc
+"launch": {
+  "cwd": "D:/Workspace/DeepSeek Harness/dsh-obsidian/server",
+  "expectedCwd": "D:/Workspace/DeepSeek Harness/dsh-obsidian/server",
+  "declaredEntry": "node_modules/obsidian-mcp/dist/main.js",
+  "absoluteEntry": "D:/Workspace/DeepSeek Harness/dsh-obsidian/server/node_modules/obsidian-mcp/dist/main.js",
+  "bundledEntry": "D:/Workspace/DeepSeek Harness/dsh-obsidian/server/node_modules/obsidian-mcp/dist/main.js",
+  "cwdMatchesBundled": true,
+  "entryMatchesBundled": true,
+  "entryExists": true
+}
+```
+
+`cwdMatchesBundled` 或 `entryMatchesBundled` 为 `false` 时，报告会直接给出该改成什么，
+而不会拿仓库的错误去掩盖它。比较在 Windows 上忽略大小写。
+
+## 与 DSH 版本的兼容性
+
+本包按 DSH 0.2.x 的插件契约编写，`engines.dsh` 声明为 `>=0.2.1-rc.3 <0.3.0-0`：
+
+- 上界写成 `<0.3.0-0` 而不是 `<0.3.0`。后者按 SemVer 的预发布规则会放行 `0.3.0-rc.1`，
+  而下一个大版本正是最可能需要跟着改的那种升级；写成 `<0.3.0-0` 让预发布版也必须显式复核。
+- 已实测运行时 **0.2.2-rc.1**（Node 24.21.0）：`mcp__obsidian__*` 工具全部可用，
+  `readPluginMeta` 能解析标题、描述和图标，健康路由正常返回 `"ok": true`。
+- 依赖的是长期稳定的部分：`dsh.bundle.patch`、`cordis.patch.yml` 的 `insert` 行、
+  `@deepseek-ai/dsh-mcp-client` 的 `serverName`/`transport`/`cwd`/`args` 配置，以及
+  `webServer.register({ kind: "exact", path, handler })`。这些都是 0.2.x 的公开面。
+- 路由的清理走 `ctx.effect(() => webServer.register(...))`：`register` 返回的 disposer 被交给
+  Cordis 管理，插件被 HMR 重载或停用时路由会一起消失，不会在下次注册时撞上重复路径。
+- `inject = ["webServer"]` 是 0.2.x 里唯一的写法（没有「可选依赖」这种拼法）。因此在没有 web 服务的
+  界面（headless、ACP、SDK）上本插件整体不激活——那些界面本来也没有路由可发布。
+
+升级到 0.3 之前，先按上面的清单复核一遍，再把 `engines.dsh` 的上界抬上去；不要在没验证的情况下
+只改数字，因为真正会失效的往往是配置字段的形状，而不是版本号本身。
+
 ## 目录结构
 
 ```
@@ -110,10 +151,12 @@ dsh-obsidian/
 - **`command`** —— `!!js process.execPath` 表示用 DSH 自带的 Node 运行服务端，
   这里是 24.x，满足 obsidian-mcp 对 Node ≥ 22 的要求。
 - **`cwd`** —— 内置的服务端目录。如果移动了插件位置，需要同步修改此项；
-  `args` 里的入口脚本是相对它解析的。
-- **`failOnStartupError`** —— 设为 `true` 时，若仓库或服务端无法启动，DSH 会直接
-  报错失败。若你希望仓库不可用时仍能启动 DSH（只是没有 Obsidian 工具），
-  将其改为 `false`。
+  `args` 里的入口脚本是相对它解析的。改错了不用猜：健康路由的 `launch` 段会直接
+  报出 `cwdMatchesBundled: false` 并给出正确路径。
+- **`failOnStartupError`** —— 设为 `true` 时，若服务端连不上或第一次同步工具就失败，
+  这一行的激活会被判为失败。DSH 对不在必需清单里的插件行只记一条带标签的警告并继续启动，
+  所以 `true` 的效果是「明确报出来」，不是「整个 DSH 起不来」；`false` 则连这条警告都省掉，
+  工具会安静地缺失。仓库配置写错的提示由健康路由负责，与此项无关。
 
 修改后重启 DSH 生效；改完先看一眼 `/plugins/dsh-obsidian/health`，比翻日志快。
 
@@ -134,7 +177,9 @@ npm test
 ```
 
 测试覆盖 `--vault` 解析、各条校验规则（不存在的路径、非目录、未初始化的目录、
-重复 id、嵌套仓库、超过十个仓库）以及健康路由的三种响应。
+重复 id、嵌套仓库、超过十个仓库）、启动行比对（`cwd`/入口与内置服务端是否一致），
+以及健康路由的各条分支：仓库正常、仓库写错、启动行指向别处、嵌套 `config.mcp` 形状、
+非 GET 方法、没有 web 服务，和「读缺失服务会抛错」的 Cordis 代理行为。
 
 ## 事务恢复
 

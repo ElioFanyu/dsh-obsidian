@@ -14,7 +14,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { inspectVault, inspectVaults, parseVaultArgs, MAX_VAULTS } from "../lib/vaults.js";
-import { resolveServerCwd, resolveServerEntry } from "../lib/launch.js";
+import { describeLaunch, resolveServerCwd, resolveServerEntry } from "../lib/launch.js";
 import { apply, HEALTH_PATH } from "../lib/index.js";
 
 /** A directory that looks like an initialized Obsidian vault. */
@@ -155,8 +155,51 @@ test("the bundled server entry is found and the cwd is its package root", () => 
   assert.equal(path.basename(resolveServerCwd()), "server");
 });
 
+test("describeLaunch agrees with the row this bundle ships", () => {
+  const config = {
+    transport: "stdio",
+    cwd: resolveServerCwd(),
+    args: ["node_modules/obsidian-mcp/dist/main.js", "serve", "--vault", "main=D:/Workspace/Obsidian"],
+  };
+  const launch = describeLaunch(config);
+  assert.equal(launch.cwdMatchesBundled, true);
+  assert.equal(launch.entryMatchesBundled, true);
+  assert.equal(launch.entryExists, true);
+  assert.equal(launch.absoluteEntry, resolveServerEntry());
+});
+
+test("describeLaunch reports a row that points somewhere else", () => {
+  const elsewhere = describeLaunch({
+    transport: "stdio",
+    cwd: path.join(tmpdir(), "some-other-server"),
+    args: ["node_modules/obsidian-mcp/dist/main.js"],
+  });
+  assert.equal(elsewhere.cwdMatchesBundled, false);
+  assert.equal(elsewhere.entryMatchesBundled, false);
+
+  const wrongEntry = describeLaunch({
+    transport: "stdio",
+    cwd: resolveServerCwd(),
+    args: ["dist/main.js"],
+  });
+  assert.equal(wrongEntry.cwdMatchesBundled, true);
+  assert.equal(wrongEntry.entryMatchesBundled, false);
+});
+
+test("describeLaunch tolerates a row with no launch fields", () => {
+  const launch = describeLaunch(undefined);
+  assert.equal(launch.cwdMatchesBundled, false);
+  assert.equal(launch.entryMatchesBundled, false);
+  assert.equal(launch.entryExists, false);
+});
+
+/** The args a correct row passes: the bundled entry script first. */
+function mcpArgs(...tail) {
+  return ["node_modules/obsidian-mcp/dist/main.js", ...tail];
+}
+
 /** A cordis context stub with just what `apply` touches. */
-function fakeContext({ args } = {}) {
+function fakeContext({ args, config } = {}) {
   const registered = [];
   const logs = [];
   const ctx = {
@@ -174,7 +217,12 @@ function fakeContext({ args } = {}) {
     effectTags: [],
     loader: {
       *entries() {
-        yield { options: { id: "obsidian-mcp", config: { serverName: "obsidian", args } } };
+        yield {
+          options: {
+            id: "obsidian-mcp",
+            config: config ?? { serverName: "obsidian", cwd: resolveServerCwd(), args },
+          },
+        };
       },
     },
   };
@@ -203,7 +251,7 @@ function invoke(route) {
 test("apply registers exactly one health route and reports a good vault", async () => {
   const dir = await makeVault();
   try {
-    const { ctx, registered } = fakeContext({ args: ["serve", "--vault", `main=${dir}`] });
+    const { ctx, registered } = fakeContext({ args: mcpArgs("serve", "--vault", `main=${dir}`) });
     apply(ctx);
     assert.equal(registered.length, 1);
     assert.equal(registered[0].path, HEALTH_PATH);
@@ -220,7 +268,7 @@ test("apply registers exactly one health route and reports a good vault", async 
 
 test("the health route explains a wrong vault instead of hiding it", async () => {
   const { ctx, registered } = fakeContext({
-    args: ["serve", "--vault", `main=${path.join(tmpdir(), "dsh-obsidian-missing", "vault")}`],
+    args: mcpArgs("serve", "--vault", `main=${path.join(tmpdir(), "dsh-obsidian-missing", "vault")}`),
   });
   apply(ctx);
   const { status, body } = await invoke(registered[0]);
@@ -232,7 +280,7 @@ test("the health route explains a wrong vault instead of hiding it", async () =>
 });
 
 test("the health route rejects non-GET methods", async () => {
-  const { ctx, registered } = fakeContext({ args: ["serve", "--vault", "main=D:/Workspace/Obsidian"] });
+  const { ctx, registered } = fakeContext({ args: mcpArgs("serve", "--vault", "main=D:/Workspace/Obsidian") });
   apply(ctx);
   const { status, body } = await new Promise((resolve) => {
     const res = {
@@ -254,4 +302,56 @@ test("apply survives a context with no web server", () => {
   const ctx = { logger: { info: (message) => logs.push(String(message)) } };
   assert.doesNotThrow(() => apply(ctx));
   assert.ok(logs.some((line) => line.includes("health route not registered")));
+});
+
+test("a context that throws on a missing service does not break apply", () => {
+  // Cordis resolves services through a proxy: reading an absent one throws
+  // instead of yielding undefined. `apply` must still report, not crash.
+  const logs = [];
+  const ctx = new Proxy(
+    { logger: { info: (message) => logs.push(String(message)) }, effect: (factory) => factory() },
+    {
+      get(target, prop) {
+        if (prop in target) return target[prop];
+        throw new Error(`cannot get property "${String(prop)}" without inject`);
+      },
+    },
+  );
+  assert.doesNotThrow(() => apply(ctx));
+  assert.ok(logs.some((line) => line.includes("health route not registered")));
+});
+
+test("the health route reports a row that starts the wrong server", async () => {
+  const { ctx, registered } = fakeContext({
+    config: {
+      serverName: "obsidian",
+      cwd: path.join(tmpdir(), "dsh-obsidian-elsewhere"),
+      args: ["node_modules/obsidian-mcp/dist/main.js", "serve", "--vault", "main=D:/Workspace/Obsidian"],
+    },
+  });
+  apply(ctx);
+  const { status, body } = await invoke(registered[0]);
+  assert.equal(status, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.launch.cwdMatchesBundled, false);
+  assert.match(body.problem, /cwd/u);
+  // The vault itself would pass; the row is what is wrong.
+  assert.deepEqual(body.vaults, []);
+});
+
+test("the health route reads a nested config.mcp row", async () => {
+  const dir = await makeVault();
+  try {
+    const { ctx, registered } = fakeContext({
+      config: {
+        mcp: { serverName: "obsidian", cwd: resolveServerCwd(), args: ["node_modules/obsidian-mcp/dist/main.js", "serve", "--vault", `main=${dir}`] },
+      },
+    });
+    apply(ctx);
+    const { body } = await invoke(registered[0]);
+    assert.equal(body.vaultConfig.found, true);
+    assert.equal(body.ok, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
