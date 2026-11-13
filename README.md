@@ -86,7 +86,7 @@ DSH 以 stdio 方式启动 `obsidian-mcp` 2.0.1 作为 MCP 服务端，并把它
 
 - 上界写成 `<0.3.0-0` 而不是 `<0.3.0`。后者按 SemVer 的预发布规则会放行 `0.3.0-rc.1`，
   而下一个大版本正是最可能需要跟着改的那种升级；写成 `<0.3.0-0` 让预发布版也必须显式复核。
-- 已实测运行时 **0.2.2-rc.1**（Node 24.21.0）：`mcp__obsidian__*` 工具全部可用，
+- 已实测运行时 **0.2.2-rc.1 / 0.2.2-rc.2**（Node 24.21.0）：`mcp__obsidian__*` 工具全部可用，
   `readPluginMeta` 能解析标题、描述和图标，健康路由正常返回 `"ok": true`。
 - 依赖的是长期稳定的部分：`dsh.bundle.patch`、`cordis.patch.yml` 的 `insert` 行、
   `@deepseek-ai/dsh-mcp-client` 的 `serverName`/`transport`/`cwd`/`args` 配置，以及
@@ -95,6 +95,24 @@ DSH 以 stdio 方式启动 `obsidian-mcp` 2.0.1 作为 MCP 服务端，并把它
   Cordis 管理，插件被 HMR 重载或停用时路由会一起消失，不会在下次注册时撞上重复路径。
 - `inject = ["webServer"]` 是 0.2.x 里唯一的写法（没有「可选依赖」这种拼法）。因此在没有 web 服务的
   界面（headless、ACP、SDK）上本插件整体不激活——那些界面本来也没有路由可发布。
+
+### 铁律：这个插件永远不能把 DSH 弄崩
+
+v1.3.0 之后的一个未发布版本在 `apply()` 里读了一个不存在的服务名。Cordis 的 context 代理对未知属性
+会**抛异常**而不是返回 `undefined`，异常进而在启动路径上变成未处理的 Promise 拒绝；DSH 的
+`installFailLoud` 把未处理拒绝升级为 `exit(1)`，于是桌面端每次启动都以
+`fatal load failure` 退出——用户看到的是「DSH 打不开了」，而不是「一个诊断插件坏了」。
+
+一个只做诊断的附加组件不值得拿整个 harness 去换。所以现在的代码里有几条刻意为之、不是防御性噪音的规则：
+
+- 所有服务读取都过 `serviceOf()`：先试 `ctx.<name>`，抛错就退回不抛的 `ctx.get(name)`。
+- `buildReport()` 自己兜住异常，把失败**当成诊断结果**返回（`internalError` 字段 + 中文说明），
+  绝不 reject。
+- 启动自检的 Promise 一定挂 `.catch`。浮空 Promise 正是 `installFailLoud` 等待引爆的东西。
+- `apply()` 本身不抛：连 `webServer.register` 抛重复路径也只记一行日志。
+
+`test/host.test.js` 末尾有一组回归测试专门焊死这扇门，包括「每个属性访问都抛错」这种极端上下文。
+**改动 `lib/index.js` 后请务必跑 `npm test`**；其中「不留未处理拒绝」这条正是当初崩溃的直接复现。
 
 升级到 0.3 之前，先按上面的清单复核一遍，再把 `engines.dsh` 的上界抬上去；不要在没验证的情况下
 只改数字，因为真正会失效的往往是配置字段的形状，而不是版本号本身。

@@ -355,3 +355,118 @@ test("the health route reads a nested config.mcp row", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression: the plugin must never be able to stop DSH.
+//
+// DSH's `installFailLoud` turns an unhandled rejection or uncaught exception
+// into `exit(1)`. A release shipped a `buildReport` that read a service name
+// that did not exist; the Cordis context proxy threw, `apply()` propagated it,
+// and the desktop host died on every launch. These tests hold that door shut.
+// ---------------------------------------------------------------------------
+
+/** A context whose unknown properties throw, the way Cordis' proxy does. */
+function throwingContext(overrides = {}) {
+  const target = {
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    effect: (factory) => factory(),
+    ...overrides,
+  };
+  return new Proxy(target, {
+    get(obj, prop) {
+      if (prop in obj) return obj[prop];
+      throw new Error(`cannot get property "${String(prop)}" without inject`);
+    },
+  });
+}
+
+test("apply does not throw when every service lookup fails", () => {
+  const ctx = throwingContext();
+  assert.doesNotThrow(() => apply(ctx));
+});
+
+test("apply does not throw when the web server throws while registering", () => {
+  const ctx = throwingContext({
+    webServer: {
+      register() {
+        throw new Error('webserver: duplicate exact route "/plugins/dsh-obsidian/health"');
+      },
+    },
+  });
+  assert.doesNotThrow(() => apply(ctx));
+});
+
+test("apply leaves no unhandled rejection behind", async () => {
+  const seen = [];
+  const onRejection = (reason) => seen.push(reason);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const ctx = throwingContext({
+      webServer: { register: () => () => {} },
+      // A loader that explodes on iteration is the nastiest startup case.
+      loader: {
+        entries() {
+          throw new Error("loader exploded");
+        },
+      },
+    });
+    apply(ctx);
+    // Give the microtask queue and one macrotask a chance to surface one.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+  assert.deepEqual(seen, []);
+});
+
+test("the health route reports diagnostics instead of throwing", async () => {
+  const registered = [];
+  const ctx = throwingContext({
+    webServer: {
+      register(route) {
+        registered.push(route);
+        return () => {};
+      },
+    },
+    loader: {
+      *entries() {
+        yield { options: { id: "obsidian-mcp", config: { serverName: "obsidian" } } };
+      },
+    },
+  });
+  apply(ctx);
+  assert.equal(registered.length, 1);
+
+  let text;
+  const res = { writeHead() {}, end(chunk) { text = chunk; } };
+  await registered[0].handler({ method: "GET" }, res);
+  const report = JSON.parse(text);
+  assert.equal(report.ok, false);
+  // A row with no launch fields must be explained, not escalated.
+  assert.equal(typeof report.problem, "string");
+});
+
+test("a broken loader degrades to a reported problem, not a rejection", async () => {
+  const registered = [];
+  const ctx = throwingContext({
+    webServer: {
+      register(route) {
+        registered.push(route);
+        return () => {};
+      },
+    },
+    loader: {
+      entries() {
+        throw new Error("loader exploded");
+      },
+    },
+  });
+  apply(ctx);
+  const res = { writeHead() {}, end() {} };
+  let text;
+  res.end = (chunk) => { text = chunk; };
+  await registered[0].handler({ method: "GET" }, res);
+  const report = JSON.parse(text);
+  assert.equal(report.ok, false);
+  assert.equal(report.vaultConfig.found, false);
+});
